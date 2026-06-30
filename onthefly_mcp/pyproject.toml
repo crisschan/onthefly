@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onthefly-mcp"
+version = "0.1.0"
+description = "On-the-Fly MCP server: stateless Capability Construction Orchestrator."
+requires-python = ">=3.10"
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+onthefly-mcp = "otf_mcp.server:main"
+
+[tool.setuptools]
+packages = ["otf_mcp", "otf_mcp.core", "otf_mcp.tools"]
