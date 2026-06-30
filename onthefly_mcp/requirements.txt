@@ -1,0 +1,11 @@
+# On-the-Fly MCP Server runtime dependencies.
+#
+# Pinned to the lowest versions known to work on Python 3.10+. The
+# server has exactly one runtime dep (PyYAML) — the rest of the
+# implementation only uses the Python standard library.
+PyYAML>=6.0,<7.0
+
+# --- development / test (kept together for a single-file install) ----
+# Tests are run with pytest; CI / devs `pip install -r requirements.txt`
+# to get a runnable environment in one step.
+pytest>=8.0,<10.0
