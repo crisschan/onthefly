@@ -1,125 +1,126 @@
-# On-the-Fly MCP Server (Python stdio)
+# On-the-Fly MCP Server
 
-A stateless *Capability Construction Orchestrator* that turns a
-project's ``otf_tools/`` directory into structured
-**Capability Construction Workflows (CCW)** for Code Agents.
+On-the-Fly MCP Server is a Python stdio server that acts as a Capability Construction Orchestrator. It does not execute business logic or generate business code directly. Instead, it returns structured Capability Construction Workflows (CCW) and maintains the authoritative CLI status ledger in `otf_tools/{system}/cli.md`.
 
-The server does not execute business logic, does not write code, does
-not call LLMs. Its only job is to plan.
+## What It Does
 
-## Architecture
+- Scans workspace-local systems under `otf_tools/`.
+- Returns system context from `onthefly.md`, `swagger.json`, and `cli.md`.
+- Generates build or reuse CCW contracts for CLI construction.
+- Validates CCW structure and stale CLI state.
+- Records CLI validation results through `register_cli`.
+- Resolves human-review locks through `resolve_escalation`.
 
-```
-Codex / Claude Code ──MCP stdio──▶ On-the-Fly MCP Server (Python) ──▶ Project cwd
-                                   ├─ discover_system
-                                   ├─ get_system_context
-                                   ├─ construct_workflow  → CCW (machine-readable)
-                                   └─ validate_contract
-```
+The server is build-time only. Runtime skills should call generated stable CLI scripts directly.
 
-Every tool call uses `os.getcwd()` as the engineering boundary; the
-server auto-creates `otf_tools/` + `otf_tools/.otf/` on the first tool
-call (spec §7).
-
-## Running
-
-### 1. Console script
+## Install With uv
 
 ```bash
-pip install -e .
-onthefly-mcp               # speaks MCP on stdin/stdout
-python -m otf_mcp          # equivalent
+uv sync
+uv run onthefly-mcp
 ```
 
-### 2. Wire it up in your MCP client
+You can also run the module directly:
 
-```jsonc
+```bash
+uv run python -m onthefly_mcp.server
+```
+
+## MCP Server Configuration
+
+Configure the MCP host to start this server with `uv`. The tested Codex configuration is:
+
+```toml
+[mcp_servers.onthefly]
+command = "uv"
+args = ["--directory", "/Users/crisschan/0workspace/codex_space/onthefly", "run", "python", "-m", "onthefly_mcp.server"]
+startup_timeout_sec = 30
+```
+
+For MCP clients that use JSON config:
+
+```json
 {
   "mcpServers": {
     "onthefly": {
-      "command": "python",
-      "args": ["-m", "otf_mcp"],
-      "cwd": "/abs/path/to/your/project"
+      "command": "uv",
+      "args": [
+        "--directory",
+        "/Users/crisschan/0workspace/codex_space/onthefly",
+        "run",
+        "python",
+        "-m",
+        "onthefly_mcp.server"
+      ],
+      "startup_timeout_sec": 30
     }
   }
 }
 ```
 
-The server uses the project's working directory as the only context;
-no extra configuration required.
+Replace `/Users/crisschan/0workspace/codex_space/onthefly` with the project directory where this command succeeds:
+
+```bash
+uv --directory /Users/crisschan/0workspace/codex_space/onthefly run python -m onthefly_mcp.server
+```
+
+Do not start the file directly with `python onthefly_mcp/server.py`; the server uses package-relative imports and must be started with `python -m onthefly_mcp.server`.
+
+## Install With pip
+
+```bash
+python3 -m pip install -r requirements.txt
+python3 -m pip install -e .
+python3 -m onthefly_mcp.server
+```
+
+## Protocol
+
+The server uses JSON-lines over stdio. Each request is one JSON object per line:
+
+```json
+{"tool": "discover_system", "args": {}}
+```
+
+Each response is one JSON object per line. Errors use the shared envelope:
+
+```json
+{
+  "error": {
+    "code": "system_not_found",
+    "message": "human readable message"
+  }
+}
+```
 
 ## Tools
 
-| Tool               | Input              | Output summary                                 |
-|--------------------|--------------------|------------------------------------------------|
-| `discover_system`  | `{}`               | `{"systems": [{system,name,tags,api_version}]}`|
-| `get_system_context` | `{system}`       | full texts of onthefly.md, cli.md, swagger.json|
-| `construct_workflow` | `{system, command, max_attempts?}` | a CCW (validated against schema v1) |
-| `validate_contract` | `{system, workflow}` | `{valid, warnings, stale_cli, missing_fields}` |
+- `discover_system`
+- `get_system_context`
+- `construct_workflow`
+- `validate_workflow`
+- `register_cli`
+- `resolve_escalation`
 
-See `On-the-Fly MCP Server Spec（v1）.md` (at the repo root) for the
-full semantics of the CCW (JSON-Schema v1, success judgement, retry
-loop, …).
+## Workspace Layout
 
-## Tests
+The server always uses the current working directory injected by the MCP host. It creates and reads workspace-local state under:
+
+```plain
+otf_tools/
+├── .otf/
+│   └── .init.lock
+└── ci/
+    ├── onthefly.md
+    ├── swagger.json
+    ├── cli.md
+    └── cli/
+```
+
+`register_cli` and `resolve_escalation` are the only tools that write `cli.md`. Generated CLI scripts under `otf_tools/{system}/cli/` remain Code Agent outputs, not MCP Server outputs.
+
+## Development Check
 
 ```bash
-cd onthefly_mcp
-python3 -m pytest -q
+python3 -m compileall onthefly_mcp
 ```
-
-74 tests cover the six phases of the spec implementation. Each phase
-file (`tests/test_phaseN_*.py`) maps to the corresponding milestone in
-the original request.
-
-### Smoke test
-
-```bash
-python3 smoke_test.py     # exercises every tool end-to-end
-```
-
-## Project layout
-
-```
-onthefly_mcp/
-├── otf_mcp/
-│   ├── errors.py                # typed exceptions + JSON-RPC codes
-│   ├── protocol.py              # MCP framing + JSON-RPC envelope
-│   ├── server.py                # OtfServer + run_stdio entrypoint
-│   ├── core/
-│   │   ├── schema.py            # CCW JSON-Schema + tiny validator
-│   │   └── workspace.py         # paths, init, onthefly.md / cli.md parsing
-│   └── tools/
-│       ├── discover_system.py
-│       ├── get_system_context.py
-│       ├── construct_workflow.py
-│       └── validate_contract.py
-└── tests/
-    └── test_phase1_skeleton.py … test_phase6_hardening.py
-```
-
-## Design decisions worth noting
-
-* **No `jsonschema` runtime dependency.** The host cannot reach PyPI.
-  `core/schema.py` implements just enough of the JSON-Schema draft-07
-  subset that the CCW v1 contract needs (type / required / enum / const
-  / items / additionalProperties) without pulling a package.
-
-* **Idempotent init.** `OtfServer` keeps one boolean flag so the
-  `otf_tools/` directory is created at most once per process even if
-  the caller hammers the discovery endpoint.
-
-* **System-name allowlist.** Names are matched against
-  `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` so a malicious caller cannot use
-  `../etc` to escape the project boundary; the primary defence is that
-  every path is rooted under `otf_tools/`, the allowlist is
-  defence-in-depth.
-
-* **CCW is *always* schema-validated before being returned.** If you
-  tweak `tools/construct_workflow.py` and accidentally drop a required
-  key, the test suite fails immediately.
-
-* **No code generation.** The server only emits the CCW; the
-  `cli/*.py` template lives in the spec, not in this codebase, by
-  deliberate design boundary (capability compiler, not capability
-  runtime).

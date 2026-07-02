@@ -1,6 +1,0 @@
-# Convenience: full dev setup (runtime + tests + lint).
--r requirements.txt
-
-# Linting / formatting (optional, not required to run the server).
-ruff>=0.5.0,<1.0
-mypy>=1.10.0,<2.0
