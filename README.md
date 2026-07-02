@@ -33,7 +33,7 @@ Configure the MCP host to start this server with `uv`. The tested Codex configur
 ```toml
 [mcp_servers.onthefly]
 command = "uv"
-args = ["--directory", "/Users/crisschan/0workspace/codex_space/onthefly", "run", "python", "-m", "onthefly_mcp.server"]
+args = ["--directory", "/Users/<your-local>/codex_space/onthefly", "run", "python", "-m", "onthefly_mcp.server"]
 startup_timeout_sec = 30
 ```
 
@@ -46,7 +46,7 @@ For MCP clients that use JSON config:
       "command": "uv",
       "args": [
         "--directory",
-        "/Users/crisschan/0workspace/codex_space/onthefly",
+        "/Users/<your-local>/codex_space/onthefly",
         "run",
         "python",
         "-m",
@@ -58,10 +58,10 @@ For MCP clients that use JSON config:
 }
 ```
 
-Replace `/Users/crisschan/0workspace/codex_space/onthefly` with the project directory where this command succeeds:
+Replace `/Users/<your-local>/codex_space/onthefly` with the project directory where this command succeeds:
 
 ```bash
-uv --directory /Users/crisschan/0workspace/codex_space/onthefly run python -m onthefly_mcp.server
+uv --directory /Users/<your-local>/codex_space/onthefly run python -m onthefly_mcp.server
 ```
 
 Do not start the file directly with `python onthefly_mcp/server.py`; the server uses package-relative imports and must be started with `python -m onthefly_mcp.server`.
