@@ -12,11 +12,15 @@ and the MCP JSON-RPC methods used by real MCP clients:
 from __future__ import annotations
 
 import json
+import os
 import sys
+from pathlib import Path
 from typing import Any, TextIO
+from urllib.parse import unquote, urlparse
 
-from .errors import error_response
+from .errors import ToolError, error_response
 from .tools import TOOLS, dispatch
+from .workspace import ensure_otf_tools, set_workspace_root
 
 SERVER_NAME = "on-the-fly"
 SERVER_VERSION = "0.1.0"
@@ -24,8 +28,70 @@ DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 
 
 TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "init_system": {
+        "description": "Bootstrap a new system from an existing swagger.json in the workspace.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["system", "swagger_path"],
+            "properties": {
+                "system": {
+                    "type": "string",
+                    "description": "System directory name, chosen by the Code Agent.",
+                },
+                "swagger_path": {
+                    "type": "string",
+                    "description": "Relative path inside workspace to an existing swagger.json file.",
+                },
+                "output_dir": {
+                    "type": "string",
+                    "description": "Optional. Absolute path to the directory where otf_tools/<system>/ is created. When omitted, defaults to <swagger.json parent>/otf_tools/.",
+                },
+                "base_url": {
+                    "type": "string",
+                    "description": "Optional. Override the base URL for API calls (e.g. https://api.example.com). When omitted, auto-extracted from swagger.json servers/host fields.",
+                },
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional tags list for onthefly.md.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional description for onthefly.md.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+    "configure_system": {
+        "description": "Provide missing config (baseurl, auth credentials, auth_types) for a system. Call this when init_system returns missing_config or when the user supplies credentials.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["system"],
+            "properties": {
+                "system": {
+                    "type": "string",
+                    "description": "System directory name.",
+                },
+                "baseurl": {
+                    "type": "string",
+                    "description": "Optional. The base URL for API calls (e.g. https://api.example.com). Persisted into onthefly.md.",
+                },
+                "auth_types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional. List of auth scheme names (e.g. [\"api_key\"], [\"bearer\"]). Persisted into onthefly.md.",
+                },
+                "auth_json": {
+                    "type": "string",
+                    "description": "Optional. A JSON string containing auth credentials (e.g. '{\"access_key\":\"abc\",\"secret_key\":\"xyz\"}'). Saved to .auth.json in the system dir. The return value includes the exact env-var command the user must run.",
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
     "discover_system": {
-        "description": "Discover systems under otf_tools/*/onthefly.md.",
+        "description": "Discover systems in the workspace under otf_tools/*/onthefly.md.",
         "inputSchema": {
             "type": "object",
             "properties": {},
@@ -105,11 +171,18 @@ TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
 
 
 def handle_request(request: Any) -> dict[str, Any] | None:
+    
+    try:
+        ensure_otf_tools()
+    except ToolError as exc:
+        return error_response(exc.code, exc.message)
     if not isinstance(request, dict):
         return error_response("invalid_args", "Request must be a JSON object")
 
     if "jsonrpc" in request or "method" in request:
         return handle_mcp_request(request)
+
+
 
     tool = request.get("tool")
     args = request.get("args", {})
@@ -117,7 +190,6 @@ def handle_request(request: Any) -> dict[str, Any] | None:
         return error_response("invalid_args", "Request must include a non-empty tool")
     if not isinstance(args, dict):
         return error_response("invalid_args", "Request args must be an object")
-
     return dispatch(tool, args)
 
 
@@ -128,12 +200,42 @@ def handle_mcp_request(request: dict[str, Any]) -> dict[str, Any] | None:
 
     if not isinstance(method, str) or not method:
         return _mcp_error(request_id, -32600, "Invalid MCP request: missing method")
+
+    if method == "tools/call":
+        if params is None:
+            params = {}
+        if not isinstance(params, dict):
+            return _mcp_error(request_id, -32602, "Invalid MCP params")
+
+        tool_name = params.get("name")
+        arguments = params.get("arguments", {})
+        if not isinstance(tool_name, str) or not tool_name:
+            return _mcp_error(request_id, -32602, "tools/call requires params.name")
+        if not isinstance(arguments, dict):
+            return _mcp_error(request_id, -32602, "tools/call params.arguments must be an object")
+
+        result = dispatch(tool_name, arguments)
+        is_error = "error" in result
+        return _mcp_result(
+            request_id,
+            {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(result, ensure_ascii=False),
+                    }
+                ],
+                "isError": is_error,
+            },
+        )
+
     if params is None:
         params = {}
     if not isinstance(params, dict):
         return _mcp_error(request_id, -32602, "Invalid MCP params")
 
     if method == "initialize":
+        _apply_workspace_from_initialize(params)
         requested_version = params.get("protocolVersion")
         protocol_version = requested_version if isinstance(requested_version, str) else DEFAULT_PROTOCOL_VERSION
         return _mcp_result(
@@ -167,29 +269,6 @@ def handle_mcp_request(request: dict[str, Any]) -> dict[str, Any] | None:
         ]
         return _mcp_result(request_id, {"tools": tools})
 
-    if method == "tools/call":
-        tool_name = params.get("name")
-        arguments = params.get("arguments", {})
-        if not isinstance(tool_name, str) or not tool_name:
-            return _mcp_error(request_id, -32602, "tools/call requires params.name")
-        if not isinstance(arguments, dict):
-            return _mcp_error(request_id, -32602, "tools/call params.arguments must be an object")
-
-        result = dispatch(tool_name, arguments)
-        is_error = "error" in result
-        return _mcp_result(
-            request_id,
-            {
-                "content": [
-                    {
-                        "type": "text",
-                        "text": json.dumps(result, ensure_ascii=False),
-                    }
-                ],
-                "isError": is_error,
-            },
-        )
-
     return _mcp_error(request_id, -32601, f"Method not found: {method}")
 
 
@@ -210,6 +289,33 @@ def _mcp_error(request_id: Any, code: int, message: str) -> dict[str, Any]:
             "message": message,
         },
     }
+
+
+def _apply_workspace_from_initialize(params: dict[str, Any]) -> None:
+    """Extract workspace root from MCP initialize params and apply it.
+
+    Supports both ``rootUri`` (URI format, preferred) and ``rootPath`` (legacy).
+    Falls back to ``Path.cwd()`` if neither is present.
+    """
+    root_uri: str | None = params.get("rootUri") if isinstance(params.get("rootUri"), str) else None
+    root_path: str | None = params.get("rootPath") if isinstance(params.get("rootPath"), str) else None
+
+    local_path: str | None = None
+
+    if root_uri is not None:
+        # rootUri is a file:// URI, e.g. "file:///d:/some/workspace"
+        parsed = urlparse(root_uri)
+        if parsed.scheme in ("file", ""):
+            # On Windows, parsed.path might be "/d:/some/workspace"
+            local_path = unquote(parsed.path)
+            # Strip leading slash on Windows drive-letter paths: "/D:/..." -> "D:/..."
+            if os.name == "nt" and len(local_path) > 2 and local_path[0] == "/" and local_path[2] == ":":
+                local_path = local_path[1:]
+    elif root_path is not None:
+        local_path = root_path
+
+    if local_path:
+        set_workspace_root(local_path)
 
 
 def serve(stdin: TextIO = sys.stdin, stdout: TextIO = sys.stdout) -> None:

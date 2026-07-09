@@ -3,20 +3,40 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-import fcntl
+import os
+if os.name == "nt":
+    # Windows 平台无 fcntl，用 windows 文件锁替代
+    import msvcrt
+else:
+    import fcntl
 import os
 from pathlib import Path
 import time
 from typing import Iterator
-
 from .errors import ToolError
 
 
 LOCK_POLL_SECONDS = 0.05
 LOCK_TIMEOUT_SECONDS = 5.0
 
+_workspace_root: Path | None = None
+
+
+def set_workspace_root(path: str | Path) -> None:
+    """Set the workspace root dynamically (e.g. from MCP initialize rootUri)."""
+    global _workspace_root
+    _workspace_root = Path(path).resolve()
+
 
 def workspace_root() -> Path:
+    """Return the workspace root directory.
+
+    Priority:
+      1. Dynamically set via ``set_workspace_root()`` (from MCP initialize rootUri)
+      2. ``Path.cwd()`` (fallback)
+    """
+    if _workspace_root is not None:
+        return _workspace_root
     return Path.cwd()
 
 
@@ -38,7 +58,10 @@ def file_lock(lock_path: Path, timeout_seconds: float | None = None) -> Iterator
     with lock_path.open("a", encoding="utf-8") as lock_file:
         while True:
             try:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if os.name == "nt":
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError as exc:
                 if time.monotonic() >= deadline:
@@ -48,7 +71,10 @@ def file_lock(lock_path: Path, timeout_seconds: float | None = None) -> Iterator
         try:
             yield
         finally:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            if os.name == "nt":
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def ensure_otf_tools() -> None:

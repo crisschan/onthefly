@@ -36,6 +36,81 @@ def read_text(path: Path, state_name: str) -> str:
         raise ToolError("corrupted_state", f"Failed to read {state_name}: {path}") from exc
 
 
+def extract_api_version(swagger_dict: dict[str, Any]) -> str:
+    """Extract version from an OpenAPI swagger dict.
+
+    OpenAPI spec puts version at ``info.version``; some non-standard files
+    may put it at the root.  We try ``info.version`` first.
+    """
+    info = swagger_dict.get("info")
+    if isinstance(info, dict):
+        v = info.get("version")
+        if isinstance(v, str):
+            return v
+    v = swagger_dict.get("version")
+    if isinstance(v, str):
+        return v
+    return ""
+
+
+def extract_baseurl(swagger_dict: dict[str, Any]) -> str:
+    """Extract the base URL from a swagger/OpenAPI dict.
+
+    OpenAPI 3.x: ``servers[0].url``
+    Swagger 2.x: ``schemes[0]://host/basePath``
+    Returns an empty string if neither is present.
+    """
+    # OpenAPI 3.x
+    servers = swagger_dict.get("servers")
+    if isinstance(servers, list) and servers:
+        url = servers[0].get("url")
+        if isinstance(url, str):
+            return url
+
+    # Swagger 2.x
+    host = swagger_dict.get("host")
+    if isinstance(host, str):
+        base_path = swagger_dict.get("basePath", "")
+        if not isinstance(base_path, str):
+            base_path = ""
+        scheme = "https"
+        schemes = swagger_dict.get("schemes")
+        if isinstance(schemes, list) and schemes:
+            scheme = str(schemes[0])
+        return f"{scheme}://{host}{base_path}"
+
+    return ""
+
+
+def extract_auth_types(swagger_dict: dict[str, Any]) -> list[str]:
+    """Extract security/auth scheme names from swagger/OpenAPI dict.
+
+    OpenAPI 3.x: ``security`` (top-level array of dicts whose keys are scheme names)
+    Swagger 2.x: ``securityDefinitions`` (map of scheme name → definition)
+
+    Returns a list of scheme-name strings (e.g. ``["api_key"]``, ``["bearer"]``).
+    """
+    types: list[str] = []
+
+    # OpenAPI 3.x
+    security = swagger_dict.get("security")
+    if isinstance(security, list):
+        for entry in security:
+            if isinstance(entry, dict):
+                for key in entry:
+                    if isinstance(key, str) and key not in types:
+                        types.append(key)
+
+    # Swagger 2.x
+    sec_defs = swagger_dict.get("securityDefinitions")
+    if isinstance(sec_defs, dict):
+        for key in sec_defs:
+            if isinstance(key, str) and key not in types:
+                types.append(key)
+
+    return types
+
+
 def parse_onthefly_summary(path: Path) -> dict[str, Any]:
     try:
         parsed = yaml.safe_load(read_text(path, "onthefly.md"))
@@ -54,12 +129,27 @@ def parse_onthefly_summary(path: Path) -> dict[str, Any]:
     if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
         raise ToolError("corrupted_state", f"onthefly.md tags must be a string array: {path}")
 
-    return {
+    result: dict[str, Any] = {
         "system": system,
         "name": name,
         "tags": tags,
         "api_version": api_version,
     }
+
+    # Optional fields
+    baseurl = parsed.get("baseurl")
+    if isinstance(baseurl, str) and baseurl:
+        result["baseurl"] = baseurl
+
+    auth_types = parsed.get("auth_types")
+    if isinstance(auth_types, list) and all(isinstance(a, str) for a in auth_types):
+        result["auth_types"] = auth_types
+
+    description = parsed.get("description")
+    if isinstance(description, str):
+        result["description"] = description
+
+    return result
 
 
 def load_swagger(system_dir: Path) -> tuple[str, dict[str, Any]]:
@@ -71,7 +161,8 @@ def load_swagger(system_dir: Path) -> tuple[str, dict[str, Any]]:
         raise ToolError("corrupted_state", f"Failed to parse swagger.json: {path}") from exc
     if not isinstance(parsed, dict):
         raise ToolError("corrupted_state", f"swagger.json must be a JSON object: {path}")
-    if not isinstance(parsed.get("version"), str):
+    version = extract_api_version(parsed)
+    if not version:
         raise ToolError("corrupted_state", f"swagger.json must include a string version: {path}")
     return raw, parsed
 
@@ -130,8 +221,8 @@ def find_command(cli_registry: dict[str, Any], command: str) -> dict[str, Any] |
 
 
 def current_api_version(swagger: dict[str, Any]) -> str:
-    version = swagger.get("version")
-    if not isinstance(version, str):
+    version = extract_api_version(swagger)
+    if not version:
         raise ToolError("corrupted_state", "swagger.json must include a string version")
     return version
 

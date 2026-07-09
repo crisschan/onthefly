@@ -684,7 +684,7 @@ AND
 | 类型 | 含义 |
 | --- | --- |
 | contract_violation | stdout/exit code 不符合 CLI spec |
-| api_mismatch | swagger / business rule 不一致 |
+| api_mismatch | swagger 不一致 |
 | runtime_error | Python exception |
 
 

@@ -33,7 +33,7 @@ Configure the MCP host to start this server with `uv`. The tested Codex configur
 ```toml
 [mcp_servers.onthefly]
 command = "uv"
-args = ["--directory", "/Users/<your-local>/codex_space/onthefly", "run", "python", "-m", "onthefly_mcp.server"]
+args = ["--directory", "/<yourlocal>/onthefly", "run", "python", "-m", "onthefly_mcp.server"]
 startup_timeout_sec = 30
 ```
 
@@ -46,7 +46,7 @@ For MCP clients that use JSON config:
       "command": "uv",
       "args": [
         "--directory",
-        "/Users/<your-local>/codex_space/onthefly",
+        "/<yourlocal>/onthefly",
         "run",
         "python",
         "-m",
@@ -58,10 +58,10 @@ For MCP clients that use JSON config:
 }
 ```
 
-Replace `/Users/<your-local>/codex_space/onthefly` with the project directory where this command succeeds:
+Replace `/<yourlocal>/onthefly` with the project directory where this command succeeds:
 
 ```bash
-uv --directory /Users/<your-local>/codex_space/onthefly run python -m onthefly_mcp.server
+uv --directory /<yourlocal>/onthefly run python -m onthefly_mcp.server
 ```
 
 Do not start the file directly with `python onthefly_mcp/server.py`; the server uses package-relative imports and must be started with `python -m onthefly_mcp.server`.
@@ -123,4 +123,17 @@ otf_tools/
 
 ```bash
 python3 -m compileall onthefly_mcp
+```
+## Onthefly.md structure
+`onthefly.md` 为纯 YAML 结构，`discover_system` 从中解析 `name` / `tags` / `api_version`：
+
+```yaml
+system: ci
+name: CI Pipeline
+tags:
+  - 构建
+  - 部署
+api_version: "2.0.0"
+description: |
+  该系统负责流水线的创建、查询与状态管理...
 ```
